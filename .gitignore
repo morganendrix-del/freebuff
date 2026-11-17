@@ -155,3 +155,15 @@ vite.config.ts.timestamp-*
 .nx/cache
 .nx/workspace-data
 .nx/migrate-runs
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Local secrets and signing material
+*.pem
+*.p12
+*.key
+
+# Local sandbox scratch space
+.sandbox/

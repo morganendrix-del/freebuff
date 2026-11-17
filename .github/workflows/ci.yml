@@ -1,0 +1,130 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.4.4
+
+jobs:
+  lint:
+    name: lint + format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run format:check
+      - run: bun run lint
+
+  typecheck:
+    name: typecheck
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  unit:
+    name: unit tests
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run test
+
+  build:
+    name: build
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+
+  compose:
+    name: compose config
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f infra/docker-compose.yml config --quiet
+
+  sandbox-image:
+    name: sandbox image + health probe
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hardened sandbox image
+        run: docker build -t freebuff/sandbox:ci infra/sandbox
+
+      - name: Boot sandbox with the same isolation flags as compose
+        run: |
+          docker run --detach --name sandbox-ci \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
+            --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
+            --tmpfs /workspace:rw,nosuid,nodev,size=64m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 512m \
+            --cpus 1 \
+            --publish 8788:8788 \
+            freebuff/sandbox:ci
+
+      - name: Probe /health until ready
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8788/health | grep -q '"status":"ok"'; then
+              echo "sandbox healthy after ${attempt}s"
+              curl -fsS http://127.0.0.1:8788/info
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "sandbox did not become healthy" >&2
+          docker logs sandbox-ci >&2
+          exit 1
+
+      - name: Prove it runs unprivileged with a read-only root filesystem
+        run: |
+          uid=$(docker exec sandbox-ci id -u)
+          test "$uid" != "0" || (echo "sandbox runs as root" && exit 1)
+          if docker exec sandbox-ci sh -c 'touch /root-probe' 2>/dev/null; then
+            echo "root filesystem is writable" >&2
+            exit 1
+          fi
+          echo "unprivileged (uid=$uid) and read-only rootfs confirmed"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs sandbox-ci || true
+
+      - name: Cleanup
+        if: always()
+        run: docker rm --force sandbox-ci || true

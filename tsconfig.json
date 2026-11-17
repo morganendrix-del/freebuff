@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@freebuff/shared": ["packages/shared/src/index.ts"],
+      "@freebuff/shared/*": ["packages/shared/src/*"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "apps/*/src/**/*.ts",
+    "apps/*/test/**/*.ts",
+    "tests/**/*.ts",
+    "infra/**/*.ts",
+    "vitest.config.ts"
+  ]
+}
