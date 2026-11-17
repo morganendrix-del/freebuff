@@ -4,12 +4,14 @@
 FROM oven/bun:1-alpine
 
 RUN apk add --no-cache ca-certificates git ripgrep tini \
-  && mkdir -p /workspace \
-  && chown -R bun:bun /workspace
+  && mkdir -p /workspace /opt/sandbox/runtime \
+  && chown -R bun:bun /workspace /opt/sandbox
+
+# Runtime code lives outside /workspace: the workspace is mounted as a tmpfs at run time, which
+# would otherwise mask the entrypoint. /opt/sandbox stays on the read-only root filesystem.
+COPY --chown=bun:bun health.ts entrypoint.ts /opt/sandbox/runtime/
 
 WORKDIR /workspace
-COPY --chown=bun:bun health.ts entrypoint.ts ./
-
 USER bun
 
 ENV SANDBOX_HTTP_PORT=8788 \
@@ -18,4 +20,4 @@ ENV SANDBOX_HTTP_PORT=8788 \
 EXPOSE 8788
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["bun", "run", "./entrypoint.ts"]
+CMD ["bun", "run", "/opt/sandbox/runtime/entrypoint.ts"]
