@@ -3,23 +3,27 @@ import type { ReactNode } from "react";
 import { useKeyboard } from "@opentui/react";
 import type { LlmProvider } from "@freebuff/llm-providers";
 import type { PlatformClient } from "@freebuff/sdk";
+import type { ProviderId } from "@freebuff/shared";
 import { QuotaMirror } from "@freebuff/quota";
 import type { AgentMessage, QuotaSnapshot } from "@freebuff/shared";
 
 import { runChatTurn } from "./flows/chat";
 import { signIn } from "./flows/login";
+import { bootstrapWorkspace, planWorkspaceView, registerCurrentProject } from "./flows/projects";
 import type { ConfigStore } from "./config";
 import type { CliState, CliStore } from "./state";
 import { applyAgentEvent } from "./state";
 import { QuotaBar } from "./ui/quota-bar";
 import { SponsoredSlot } from "./ui/sponsored-slot";
 
+const REGISTER_CURRENT_VALUE = "__register_current_directory__";
+
 export interface AppProps {
   readonly store: CliStore;
   readonly configStore: ConfigStore;
   readonly client: PlatformClient;
   readonly projectRoot: string;
-  readonly provider: LlmProvider | undefined;
+  readonly providerFactory: (providerId: ProviderId) => LlmProvider;
   readonly authenticated: boolean;
   readonly onExit: () => void;
 }
@@ -29,7 +33,7 @@ export function App({
   configStore,
   client,
   projectRoot,
-  provider,
+  providerFactory,
   authenticated,
   onExit,
 }: AppProps): ReactNode {
@@ -44,36 +48,36 @@ export function App({
     if (key.raw === "\u0003") onExit();
   });
 
-  useEffect(() => {
-    if (!authenticated) return;
-    let cancelled = false;
-    const isCancelled = (): boolean => cancelled;
-    void (async () => {
-      const [projects, quota, ad] = await Promise.all([
-        client.projects.list(),
+  const loadWorkspace = useCallback(async (): Promise<void> => {
+    try {
+      const [bootstrap, quota, ad] = await Promise.all([
+        bootstrapWorkspace({ client, rootPath: projectRoot }),
         client.quota.snapshot(),
         client.ads.select({ surface: "cli", contextTags: ["code"] }),
       ]);
-      if (isCancelled()) return;
+      const view = planWorkspaceView(bootstrap);
       store.setState((previous) => ({
         ...previous,
-        phase: projects.length > 0 ? "picking_project" : "ready",
-        projects,
+        phase: view.phase,
+        ...(view.activeProject === undefined ? {} : { activeProject: view.activeProject }),
+        projects: bootstrap.projects,
         quota,
         ad,
-        statusLine: projects.length > 0 ? "Pick a project to continue." : "Ready.",
+        statusLine: view.statusLine,
       }));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [authenticated, client, store]);
+    } catch (error) {
+      store.setState({
+        statusLine: error instanceof Error ? error.message : "Could not load the workspace.",
+      });
+    }
+  }, [client, projectRoot, store]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    void loadWorkspace();
+  }, [authenticated, loadWorkspace]);
 
   const submitPrompt = async (prompt: string): Promise<void> => {
-    if (provider === undefined) {
-      store.setState({ statusLine: "No provider key configured. Set the provider API key first." });
-      return;
-    }
     const project = state.activeProject;
     if (project === undefined) {
       store.setState({ statusLine: "Pick a project first." });
@@ -87,7 +91,7 @@ export function App({
         client,
         projectRoot: project.rootPath,
         prompt,
-        provider,
+        providerFactory,
         ...(state.activeSessionId === undefined ? {} : { sessionId: state.activeSessionId }),
         onEvent: (event) => {
           store.setState((previous) => applyAgentEvent(previous, event));
@@ -110,6 +114,26 @@ export function App({
   };
 
   const pickProject = async (projectId: string): Promise<void> => {
+    if (projectId === REGISTER_CURRENT_VALUE) {
+      try {
+        const project = await registerCurrentProject({ client, rootPath: projectRoot });
+        store.setState((previous) => ({
+          ...previous,
+          phase: "ready",
+          activeProject: project,
+          projects: previous.projects.some((entry) => entry.id === project.id)
+            ? previous.projects
+            : [...previous.projects, project],
+          statusLine: `Registered ${project.name} for this directory.`,
+        }));
+      } catch (error) {
+        store.setState({
+          statusLine: error instanceof Error ? error.message : "Could not register this directory.",
+        });
+      }
+      return;
+    }
+
     const project = state.projects.find((entry) => entry.id === projectId);
     if (project === undefined) return;
     const sessions = await client.sessions.list(project.id);
@@ -139,9 +163,10 @@ export function App({
                   const result = await signIn({ store: configStore, client, email: value });
                   store.setState({
                     user: result.user,
-                    phase: "picking_project",
                     statusLine: `Signed in as ${result.user.email}`,
                   });
+                  await loadWorkspace();
+                  store.setState({ user: result.user });
                 } catch (error) {
                   store.setState({
                     statusLine: error instanceof Error ? error.message : "Sign-in failed.",
@@ -158,11 +183,18 @@ export function App({
           <text fg="#9aa0a6">Choose a project</text>
           <select
             focused
-            options={state.projects.map((project) => ({
-              name: project.name,
-              description: project.rootPath,
-              value: project.id,
-            }))}
+            options={[
+              ...state.projects.map((project) => ({
+                name: project.name,
+                description: project.rootPath,
+                value: project.id,
+              })),
+              {
+                name: "Register this directory",
+                description: projectRoot,
+                value: REGISTER_CURRENT_VALUE,
+              },
+            ]}
             selectedIndex={pickerIndex}
             onChange={(index) => {
               setPickerIndex(index);
@@ -256,7 +288,7 @@ export interface LaunchAppOptions {
   readonly configStore: ConfigStore;
   readonly client: PlatformClient;
   readonly projectRoot: string;
-  readonly provider: LlmProvider | undefined;
+  readonly providerFactory: (providerId: ProviderId) => LlmProvider;
   readonly authenticated: boolean;
 }
 
@@ -279,7 +311,7 @@ export async function launchApp(options: LaunchAppOptions): Promise<void> {
       configStore={options.configStore}
       client={options.client}
       projectRoot={options.projectRoot}
-      provider={options.provider}
+      providerFactory={options.providerFactory}
       authenticated={options.authenticated}
       onExit={shutdown}
     />,

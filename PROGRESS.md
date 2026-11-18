@@ -48,7 +48,7 @@ now forwards the parent signal (`DECISIONS.md` D14); the cancellation test asser
 
 ### Phase 2 — passed 2026-11-18
 
-`bun run check` and `bun run build` clean: 28 test files, 172 tests (35 new), 0 lint warnings, no `tsc`
+`bun run check` and `bun run build` clean: 30 test files, 179 tests (42 new), 0 lint warnings, no `tsc`
 errors. Runtime smoke under Bun: `freebuff --help`, `freebuff config`, `freebuff dev` + `GET /v1/health`
 
 - `POST /v1/auth/login`, and the TUI's initial frame (renderer boots and draws the sign-in screen).
@@ -61,6 +61,15 @@ errors. Runtime smoke under Bun: `freebuff --help`, `freebuff config`, `freebuff
 | Terminal command                              | The same turn runs `printf broker-stdout-marker` through `run_command`; the tool result is ok, and a `process.stdout.write` spy proves the output never reached the CLI's stdio (`tests/integration/cli/broker.test.ts` covers piped stdio, scrubbed env, timeout and abort kills) | pass   |
 | Chat persistence                              | `sessions.get()` returns the stored messages immediately; after closing and restarting the platform on the same state file, `sessions.list()` and `sessions.get()` still return the session, message count and project id                                                          | pass   |
 | Server-authoritative quota + ads (supporting) | `packages/quota` 16 tests: window cut at local midnight, DST and half-hour zones, credit consumption, daily denial, no rollover, client mirror cannot extend time. `freebuff dev` + login smoke returned a real session and a `Sponsored` selection for a free-tier account        | pass   |
+
+### Phase 2 post-gate fixes — 2026-11-18
+
+Two defects found on review, fixed with tests (179 total, 7 new):
+
+| Fix                                                    | Behaviour now                                                                                                                                                                                                                                                                 | Evidence                                                                                                                                                                                                                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First-time user could reach a dead end                 | An account with no projects gets the current directory registered automatically and opens chat in it; an account with other projects sees a picker that also offers **Register this directory**; signing in from the TUI loads the workspace instead of leaving an empty view | `tests/integration/cli/bootstrap.test.ts` (4 tests: fresh register, no duplicate, picker + on-demand register, view planning). TUI smoke: first launch printed `Registered <repo> for this directory.`                                                |
+| Provider was hardcoded (`"deepseek"`) in the TUI entry | `runChatTurn` takes a `providerFactory` and asks it for the **resolved model's** provider; a factory returning a mismatched provider is rejected with `Provider "x" cannot serve model "y"`                                                                                   | `tests/integration/cli/provider-selection.test.ts` (3 tests: factory called with the resolved provider, model in the provider request matches the resolution, mismatch rejected, plus a source scan proving no provider id literal in `apps/cli/src`) |
 
 ## Known gaps / risks
 
@@ -93,7 +102,7 @@ contain a `README.md` stating scope + phase gate and nothing else (no stub modul
 
 | Path                             | Kind | Phase | Contents today          |
 | -------------------------------- | ---- | ----- | ----------------------- |
-| `apps/cli/`                      | app  | 2     | implemented + 13 tests  |
+| `apps/cli/`                      | app  | 2     | implemented + 20 tests  |
 | `apps/desktop/`                  | app  | 5     | placeholder `README.md` |
 | `apps/web/`                      | app  | 4     | placeholder `README.md` |
 | `apps/cloud/`                    | app  | 3     | placeholder `README.md` |

@@ -12,6 +12,7 @@ import type {
   AgentRunResult,
   Id,
   ModelSpec,
+  ProviderId,
   QuotaDecision,
   Session,
   Surface,
@@ -35,7 +36,8 @@ export interface ChatTurnOptions {
   readonly client: PlatformClient;
   readonly projectRoot: string;
   readonly prompt: string;
-  readonly provider: LlmProvider;
+  /** Called with the provider of the *resolved* model, so no call site can pick a provider. */
+  readonly providerFactory: (providerId: ProviderId) => LlmProvider;
   readonly sessionId?: Id<"session">;
   readonly title?: string;
   readonly surface?: Surface;
@@ -81,6 +83,12 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
   const selection = resolveModelForTier(session.tier, options.modelId);
   if (!selection.ok) throw new Error(selection.error.message);
   const model = selection.value;
+  const provider = options.providerFactory(model.provider);
+  if (provider.id !== model.provider) {
+    throw new Error(
+      `Provider "${provider.id}" cannot serve model "${model.id}" (needs "${model.provider}").`,
+    );
+  }
 
   const terminal = await options.client.terminals.create(session.id);
   const events: AgentEvent[] = [];
@@ -101,7 +109,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         sessionId: session.id,
         projectRoot: project.rootPath,
         model,
-        provider: options.provider,
+        provider,
         registry: createToolRegistry(workspace),
         systemPrompt: options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
         permissions: options.permissions ?? DEFAULT_AGENT_PERMISSIONS,

@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import type { LlmProvider } from "@freebuff/llm-providers";
 import type { ProviderId } from "@freebuff/shared";
-import { resolveModelForTier } from "@freebuff/shared";
 
 import { anonClient, authenticatedClient, clientFromConfig } from "./api";
 import type { ConfigStore } from "./config";
@@ -75,14 +74,11 @@ export function buildProgram(deps: CommandDeps): Command {
     .action(
       async (promptParts: readonly string[], options: { model?: string; session?: string }) => {
         const client = authenticatedClient(deps.store);
-        const selection = resolveModelForTier("free", options.model);
-        if (!selection.ok) throw new Error(selection.error.message);
-
         const result = await runChatTurn({
           client,
           projectRoot: deps.cwd,
           prompt: promptParts.join(" "),
-          provider: deps.providerFactory(selection.value.provider),
+          providerFactory: deps.providerFactory,
           ...(options.model === undefined ? {} : { modelId: options.model }),
           ...(options.session === undefined ? {} : { sessionId: options.session as never }),
           onEvent: (event) => {

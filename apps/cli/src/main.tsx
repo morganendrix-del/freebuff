@@ -27,20 +27,13 @@ async function main(): Promise<void> {
       running: false,
     });
 
-    let provider: LlmProvider | undefined;
-    try {
-      provider = providerFactory("deepseek");
-    } catch {
-      provider = undefined;
-    }
-
     const { launchApp } = await import("./app");
     await launchApp({
       store: cliStore,
       configStore: store,
       client,
       projectRoot: process.cwd(),
-      provider,
+      providerFactory,
       authenticated,
     });
   };

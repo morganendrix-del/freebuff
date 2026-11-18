@@ -101,7 +101,7 @@ describe("CLI gate: auth → picker → multi-file edit → terminal → persist
       client,
       projectRoot: repo,
       prompt,
-      provider,
+      providerFactory: () => provider,
       limits: { maxSteps: 4 },
     });
 
