@@ -61,6 +61,58 @@ describe("localDayWindow", () => {
   });
 });
 
+describe("DST safety across a full year", () => {
+  const ZONES = [
+    "UTC",
+    "America/New_York",
+    "Europe/Berlin",
+    "Asia/Kolkata",
+    "Asia/Kathmandu",
+    "Australia/Lord_Howe",
+    "Pacific/Chatham",
+    "America/Santiago",
+  ];
+
+  function nextDayKey(key: string): string {
+    const date = new Date(`${key}T00:00:00.000Z`);
+    date.setUTCDate(date.getUTCDate() + 1);
+    return date.toISOString().slice(0, 10);
+  }
+
+  test("every local day advances by exactly one calendar day and lasts 22-26 hours", () => {
+    for (const zone of ZONES) {
+      let cursor = new Date("2026-01-01T12:00:00.000Z");
+      let previousDayKey = dayKey(cursor, zone);
+
+      for (let day = 0; day < 365; day += 1) {
+        const window = localDayWindow(cursor, zone);
+        expect(window.dayKey).toBe(previousDayKey);
+
+        const start = new Date(window.startsAt);
+        const end = new Date(window.expiresAt);
+        const hours = (end.getTime() - start.getTime()) / 3_600_000;
+        expect(end.getTime()).toBeGreaterThan(start.getTime());
+        expect(hours).toBeGreaterThanOrEqual(22);
+        expect(hours).toBeLessThanOrEqual(26);
+
+        previousDayKey = nextDayKey(window.dayKey);
+        cursor = end;
+      }
+    }
+  });
+
+  test("consecutive windows are contiguous outside midnight-shifting zones", () => {
+    for (const zone of ["UTC", "America/New_York", "Europe/Berlin", "Asia/Kolkata"]) {
+      let cursor = new Date("2026-01-01T00:00:00.000Z");
+      for (let day = 0; day < 365; day += 1) {
+        const window = localDayWindow(cursor, zone);
+        if (day > 0) expect(window.startsAt).toBe(cursor.toISOString());
+        cursor = new Date(window.expiresAt);
+      }
+    }
+  });
+});
+
 describe("nextLocalMidnight", () => {
   test("lands exactly on local midnight across a DST change", () => {
     const next = nextLocalMidnight(new Date("2026-03-08T12:00:00.000Z"), NEW_YORK);

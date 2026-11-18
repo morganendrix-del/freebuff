@@ -2,6 +2,7 @@ export * from "./config/agent";
 export * from "./config/countries";
 export * from "./config/env";
 export * from "./config/models";
+export * from "./config/providers";
 export * from "./config/tiers";
 export * from "./types/ad";
 export * from "./types/agent";

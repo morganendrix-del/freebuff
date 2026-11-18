@@ -5,9 +5,12 @@ export type ProviderId = "anthropic" | "deepseek" | "openai";
 export type ModelCapability = "prompt_caching" | "reasoning" | "streaming" | "tools" | "vision";
 
 export interface ModelPricing {
+  /** Standard (or peak, for providers that bill by time of day) input rate. */
   readonly inputPerMTokUsd: number;
   readonly outputPerMTokUsd: number;
   readonly cachedInputPerMTokUsd?: number;
+  readonly offPeakInputPerMTokUsd?: number;
+  readonly offPeakOutputPerMTokUsd?: number;
 }
 
 export interface ModelSpec {

@@ -69,3 +69,44 @@ tool calls against those schemas deterministically.
 `utils/time.ts` derives local day keys and the next local midnight from IANA time zones using `Intl`,
 with iterative offset resolution so DST transitions are handled. The platform never assumes the server
 timezone; quota windows always carry their `timeZone`.
+
+## D11 — Shell execution exists only behind the `CommandExecutor` port
+
+The agent's `run_command` tool never spawns a process itself. It calls a `CommandExecutor` supplied by
+the host (`packages/agent-runtime/src/tools/workspace.ts`) and fails with `permission_denied` when none
+is attached, so no unsandboxed execution path exists in shipped code. Phase 3 supplies the sandbox
+orchestrator behind the same port. Tests inject a local `node:child_process` executor to prove
+cancellation at the OS level; that executor lives in test code only.
+
+## D12 — Model catalogue refreshed against live provider docs (2026-11-17)
+
+`config/models.ts` was re-checked against the providers' published catalogues and API references on
+2026-11-17 (`MODEL_CATALOG_METADATA.retrievedAt`). Active ids: DeepSeek `deepseek-flash` (V4.1, the
+free default) and `deepseek-v4-pro`; Anthropic `claude-sonnet-5-5` (pro default) and `claude-opus-5-5`;
+OpenAI `gpt-6.1-sol` and `gpt-6-astra`. Legacy `deepseek-chat` / `deepseek-reasoner` were retired on
+2026-07-24 and are intentionally absent. Context windows and per-million-token prices were updated from
+the same sources, and `ModelPricing` gained optional off-peak fields because DeepSeek publishes
+discounted windows. Refresh before Phase 5 billing math is trusted.
+
+## D13 — Model choice is enforced mechanically, not by convention
+
+Two guards keep model selection on `resolveModelForTier`: an ESLint rule `freebuff/no-hardcoded-model`
+(defined inline in `eslint.config.mjs`) that fails any string literal matching a provider model id in
+`packages/*/src` or `apps/*/src`, and `tests/unit/model-selection.test.ts`, which scans those sources
+for the same pattern and asserts the catalogue is the only module resolving a tier. The catalogue and
+test files are the only exclusions, so a new call site cannot bypass the rule.
+
+## D14 — Tool timeouts inherit run cancellation
+
+`withTimeout` in `utils/retry.ts` accepts an optional parent `AbortSignal` and aborts the operation's
+signal when the parent aborts. `ToolRegistry` passes the run signal, so cancelling a run reaches an
+in-flight tool (killing its subprocess or closing its stream) instead of waiting for the tool's own
+timeout. This was a real defect found by the Phase 1 cancellation gate: previously a cancelled run left
+`sleep 60` alive until the tool deadline.
+
+## D15 — Code map indexer is regex-based behind a stable shape
+
+`packages/code-map` extracts symbols and references with anchored regular expressions per language
+rather than a tree-sitter parse. It is deterministic, dependency-free and fast enough for the agent's
+`code_map_query` tool. Because callers only see `CodeMap` / `CodeMapQueryResult`, a tree-sitter backend
+can replace `indexRepository` later without changing the tool, its schema or its tests.

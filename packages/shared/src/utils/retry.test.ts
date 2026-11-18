@@ -27,6 +27,37 @@ describe("computeBackoffMs", () => {
   });
 });
 
+describe("jitter bounds", () => {
+  const policy: RetryPolicy = {
+    maxAttempts: 8,
+    baseDelayMs: 1_000,
+    maxDelayMs: 16_000,
+    jitterRatio: 0.25,
+  };
+
+  test("every random draw stays inside the band and is an integer", () => {
+    for (const attempt of [1, 2, 3, 4, 5, 6, 9]) {
+      const exponential = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));
+      for (const draw of [0, 0.01, 0.25, 0.5, 0.75, 0.99, 1]) {
+        const delay = computeBackoffMs(attempt, policy, () => draw);
+        expect(Number.isInteger(delay)).toBe(true);
+        expect(delay).toBeGreaterThanOrEqual(Math.floor(exponential * 0.75));
+        expect(delay).toBeLessThanOrEqual(Math.ceil(exponential * 1.25));
+      }
+    }
+  });
+
+  test("the ceiling is hard, even with maximum jitter", () => {
+    expect(computeBackoffMs(30, policy, () => 1)).toBe(policy.maxDelayMs);
+    expect(computeBackoffMs(30, policy, () => 0)).toBe(policy.maxDelayMs * 0.75);
+  });
+
+  test("delays are never negative for out-of-range random draws", () => {
+    expect(computeBackoffMs(1, { ...policy, jitterRatio: 5 }, () => 1)).toBeGreaterThanOrEqual(0);
+    expect(computeBackoffMs(0, policy, () => 0)).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe("withRetry", () => {
   test("retries transient failures until success", async () => {
     let calls = 0;
@@ -113,6 +144,54 @@ describe("withTimeout", () => {
 });
 
 describe("CircuitBreaker", () => {
+  test("stays closed below the failure threshold", () => {
+    const now = 0;
+    const breaker = new CircuitBreaker({
+      policy: { failureThreshold: 3, resetTimeoutMs: 1_000 },
+      now: () => now,
+    });
+
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.state).toBe("closed");
+    expect(breaker.canRequest()).toBe(true);
+
+    breaker.recordSuccess();
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.state).toBe("closed");
+  });
+
+  test("a failed half-open probe reopens and restarts the cooldown", () => {
+    let now = 0;
+    const breaker = new CircuitBreaker({
+      policy: { failureThreshold: 2, resetTimeoutMs: 100 },
+      now: () => now,
+    });
+
+    breaker.recordFailure();
+    breaker.recordFailure();
+    expect(breaker.state).toBe("open");
+
+    now = 99;
+    expect(breaker.state).toBe("open");
+    now = 100;
+    expect(breaker.state).toBe("half_open");
+    expect(breaker.canRequest()).toBe(true);
+
+    breaker.recordFailure();
+    expect(breaker.state).toBe("open");
+
+    now = 150;
+    expect(breaker.state).toBe("open");
+    now = 200;
+    expect(breaker.state).toBe("half_open");
+
+    breaker.recordSuccess();
+    expect(breaker.state).toBe("closed");
+    expect(breaker.canRequest()).toBe(true);
+  });
+
   test("opens after repeated failures, then probes and closes", async () => {
     let now = 0;
     const breaker = new CircuitBreaker({

@@ -92,26 +92,64 @@ function wallClockToInstant(wallClockMs: number, timeZone: IanaTimeZone): number
   return guess;
 }
 
+function formatDayKey(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 /** Local calendar day key (`YYYY-MM-DD`) for an instant in a time zone. */
 export function dayKey(instant: Date, timeZone: IanaTimeZone): string {
   const parts = zonedParts(instant, timeZone);
-  const month = String(parts.month).padStart(2, "0");
-  const day = String(parts.day).padStart(2, "0");
-  return `${String(parts.year).padStart(4, "0")}-${month}-${day}`;
+  return formatDayKey(parts.year, parts.month, parts.day);
+}
+
+const ADJUST_STEP_MS = 15 * 60 * 1000;
+const MAX_ADJUST_STEPS = 16;
+
+/**
+ * First instant whose local calendar date is the requested one.
+ *
+ * Midday is unambiguous; local midnight is not. Some zones (America/Santiago, for example) move
+ * the clock at midnight, so "00:00 local" on that date never happens. Resolving the wall clock can
+ * land just before the target date, so walk forward in 15 minute steps until the local date is
+ * reached — bounded, because a midnight skip is at most an hour long.
+ */
+function firstInstantOfLocalDate(
+  year: number,
+  month: number,
+  day: number,
+  timeZone: IanaTimeZone,
+): Date {
+  const wallClock = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+  const targetDayKey = formatDayKey(year, month, day);
+  let candidate = new Date(wallClockToInstant(wallClock, timeZone));
+
+  for (
+    let step = 0;
+    step < MAX_ADJUST_STEPS && dayKey(candidate, timeZone) < targetDayKey;
+    step += 1
+  ) {
+    candidate = new Date(candidate.getTime() + ADJUST_STEP_MS);
+  }
+
+  return candidate;
 }
 
 /** Instant at which the local day containing `instant` started. */
 export function startOfLocalDay(instant: Date, timeZone: IanaTimeZone): Date {
   const parts = zonedParts(instant, timeZone);
-  const wallClock = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
-  return new Date(wallClockToInstant(wallClock, timeZone));
+  return firstInstantOfLocalDate(parts.year, parts.month, parts.day, timeZone);
 }
 
 /** Instant of the next local midnight after `instant` (quota reset boundary). */
 export function nextLocalMidnight(instant: Date, timeZone: IanaTimeZone): Date {
   const parts = zonedParts(instant, timeZone);
-  const wallClock = Date.UTC(parts.year, parts.month - 1, parts.day + 1, 0, 0, 0, 0);
-  return new Date(wallClockToInstant(wallClock, timeZone));
+  const tomorrow = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + 1));
+  return firstInstantOfLocalDate(
+    tomorrow.getUTCFullYear(),
+    tomorrow.getUTCMonth() + 1,
+    tomorrow.getUTCDate(),
+    timeZone,
+  );
 }
 
 export interface LocalDayWindow {

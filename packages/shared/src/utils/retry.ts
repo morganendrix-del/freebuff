@@ -32,7 +32,8 @@ export function computeBackoffMs(
   const safeAttempt = Math.max(1, attempt);
   const exponential = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (safeAttempt - 1));
   const jitter = exponential * policy.jitterRatio * (random() * 2 - 1);
-  return Math.max(0, Math.round(exponential + jitter));
+  // The policy ceiling is a hard ceiling: jitter may not push a delay past maxDelayMs.
+  return Math.min(policy.maxDelayMs, Math.max(0, Math.round(exponential + jitter)));
 }
 
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -131,6 +132,7 @@ export async function withTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   message = "Operation timed out.",
+  parent?: AbortSignal,
 ): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new PlatformError("invalid_config", "Timeout must be a positive number of milliseconds.");
@@ -139,6 +141,15 @@ export async function withTimeout<T>(
   const controller = new AbortController();
   const timeoutError = new TimeoutError(message, timeoutMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
+
+  // Cancelling the parent must reach the operation's signal, not just the timeout.
+  const onAbort = (): void => {
+    controller.abort(parent?.reason);
+  };
+  if (parent !== undefined) {
+    if (parent.aborted) onAbort();
+    else parent.addEventListener("abort", onAbort, { once: true });
+  }
 
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -151,6 +162,7 @@ export async function withTimeout<T>(
     return await Promise.race([operation(controller.signal), timeoutPromise]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    parent?.removeEventListener("abort", onAbort);
   }
 }
 

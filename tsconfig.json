@@ -4,7 +4,10 @@
     "baseUrl": ".",
     "paths": {
       "@freebuff/shared": ["packages/shared/src/index.ts"],
-      "@freebuff/shared/*": ["packages/shared/src/*"]
+      "@freebuff/shared/*": ["packages/shared/src/*"],
+      "@freebuff/llm-providers": ["packages/llm-providers/src/index.ts"],
+      "@freebuff/code-map": ["packages/code-map/src/index.ts"],
+      "@freebuff/agent-runtime": ["packages/agent-runtime/src/index.ts"]
     }
   },
   "include": [

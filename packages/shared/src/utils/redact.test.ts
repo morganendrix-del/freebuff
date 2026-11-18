@@ -66,6 +66,49 @@ describe("redact", () => {
     });
   });
 
+  test("does not let hostile keys pollute prototypes", () => {
+    const hostile = JSON.parse(
+      '{"__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}',
+    ) as Record<string, unknown>;
+
+    const safe = redact(hostile) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(safe)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.keys(safe)).toEqual(["__proto__", "constructor"]);
+  });
+
+  test("survives throwing getters", () => {
+    const hostile = {
+      get boom(): never {
+        throw new Error("getter exploded");
+      },
+      token: "sk-live",
+    };
+
+    expect(redact(hostile)).toEqual({ boom: "[Unreadable]", token: "[REDACTED]" });
+  });
+
+  test("redacts credentials inside Maps and keeps JSON on one line", () => {
+    const map = new Map<string, unknown>([
+      ["access_token", "abc"],
+      ["tool", "read_file"],
+    ]);
+    expect(redact(map)).toEqual({ access_token: "[REDACTED]", tool: "read_file" });
+
+    const line = JSON.stringify(redact({ message: "line1\nline2\r\nINFO forged record" }));
+    expect(line.includes("\n")).toBe(false);
+    expect(line.includes("\r")).toBe(false);
+  });
+
+  test("stays bounded on deeply nested hostile input", () => {
+    let deep: Record<string, unknown> = { token: "sk-live" };
+    for (let index = 0; index < 50; index += 1) deep = { child: deep };
+
+    const serialized = JSON.stringify(redact(deep));
+    expect(serialized).toContain("[MaxDepth]");
+    expect(serialized).not.toContain("sk-live");
+  });
+
   test("normalises non-JSON values", () => {
     expect(redact(new Error("boom"))).toEqual({ name: "Error", message: "boom" });
     expect(redact({ at: new Date("2026-11-17T00:00:00.000Z") })).toEqual({

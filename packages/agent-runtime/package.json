@@ -1,0 +1,14 @@
+{
+  "name": "@freebuff/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@freebuff/code-map": "workspace:*",
+    "@freebuff/llm-providers": "workspace:*",
+    "@freebuff/shared": "workspace:*"
+  }
+}

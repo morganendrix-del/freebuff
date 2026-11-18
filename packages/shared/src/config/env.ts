@@ -25,6 +25,10 @@ export const PLATFORM_ENV_SCHEMA = z.object({
   OPENAI_API_KEY: optionalSecret,
   ANTHROPIC_API_KEY: optionalSecret,
 
+  DEEPSEEK_BASE_URL: optionalUrl,
+  OPENAI_BASE_URL: optionalUrl,
+  ANTHROPIC_BASE_URL: optionalUrl,
+
   GITHUB_CLIENT_ID: optionalSecret,
   GITHUB_CLIENT_SECRET: optionalSecret,
   GITHUB_OAUTH_REDIRECT_URL: optionalUrl,

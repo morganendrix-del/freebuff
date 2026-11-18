@@ -60,6 +60,15 @@ export interface RedactionOptions {
   readonly extraSensitiveKeys?: readonly string[];
 }
 
+/** Reads an own property without letting a hostile getter throw out of the redactor. */
+function readProperty(input: object, key: string): unknown {
+  try {
+    return (input as Record<string, unknown>)[key];
+  } catch {
+    return "[Unreadable]";
+  }
+}
+
 /** Returns a structurally-similar value that is safe to serialize. Cycles become `[Circular]`. */
 export function redact(value: unknown, options: RedactionOptions = {}): unknown {
   const replacement = options.replacement ?? REDACTED;
@@ -111,11 +120,20 @@ export function redact(value: unknown, options: RedactionOptions = {}): unknown 
     if (input instanceof Set) return [...input].map((item) => visit(item, depth + 1));
 
     const output: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(input)) {
-      output[key] =
+    for (const key of Object.keys(input)) {
+      const value = readProperty(input, key);
+      const safeValue =
         isSensitiveKey(key) || extraSensitiveKeys.includes(key)
           ? replacement
-          : visit(item, depth + 1);
+          : visit(value, depth + 1);
+      // defineProperty keeps hostile keys such as "__proto__" as plain own properties instead of
+      // letting them mutate the prototype chain of the redacted record.
+      Object.defineProperty(output, key, {
+        value: safeValue,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return output;
   };

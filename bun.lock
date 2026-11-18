@@ -16,6 +16,29 @@
         "vitest": "^5.1.0",
       },
     },
+    "packages/agent-runtime": {
+      "name": "@freebuff/agent-runtime",
+      "version": "0.1.0",
+      "dependencies": {
+        "@freebuff/code-map": "workspace:*",
+        "@freebuff/llm-providers": "workspace:*",
+        "@freebuff/shared": "workspace:*",
+      },
+    },
+    "packages/code-map": {
+      "name": "@freebuff/code-map",
+      "version": "0.1.0",
+      "dependencies": {
+        "@freebuff/shared": "workspace:*",
+      },
+    },
+    "packages/llm-providers": {
+      "name": "@freebuff/llm-providers",
+      "version": "0.1.0",
+      "dependencies": {
+        "@freebuff/shared": "workspace:*",
+      },
+    },
     "packages/shared": {
       "name": "@freebuff/shared",
       "version": "0.1.0",
@@ -60,6 +83,12 @@
     "@eslint/object-schema": ["@eslint/object-schema@3.0.5", "", {}, "sha512-vqTaUEgxzm+YDSdElad6PiRoX4t8VGDjCtt05zn4nU810UIx/uNEV7/lZJ6KwFThKZOzOxzXy48da+No7HZaMw=="],
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.7.3", "", { "dependencies": { "@eslint/core": "^1.2.1", "levn": "^0.4.1" } }, "sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q=="],
+
+    "@freebuff/agent-runtime": ["@freebuff/agent-runtime@workspace:packages/agent-runtime"],
+
+    "@freebuff/code-map": ["@freebuff/code-map@workspace:packages/code-map"],
+
+    "@freebuff/llm-providers": ["@freebuff/llm-providers@workspace:packages/llm-providers"],
 
     "@freebuff/shared": ["@freebuff/shared@workspace:packages/shared"],
 
