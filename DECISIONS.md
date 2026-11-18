@@ -110,3 +110,35 @@ timeout. This was a real defect found by the Phase 1 cancellation gate: previous
 rather than a tree-sitter parse. It is deterministic, dependency-free and fast enough for the agent's
 `code_map_query` tool. Because callers only see `CodeMap` / `CodeMapQueryResult`, a tree-sitter backend
 can replace `indexRepository` later without changing the tool, its schema or its tests.
+
+## D16 — The Phase 2 platform API lives in `apps/cli/src/platform`
+
+No hosted API exists until Phase 3, but the CLI must not talk to an in-process fake. The CLI therefore
+ships a real HTTP service (`startLocalPlatform`, Node `http`, durable JSON store, atomic writes) that
+the `freebuff dev` command runs. It issues tokens, owns projects and sessions per user, decides quota
+through `@freebuff/quota`, selects ads server-side and brokers terminal commands. `@freebuff/sdk` is
+its only client, so Phase 3 can replace the deployment without changing client code; the store is not
+a stub — it is the same contract, file-backed. Ownership checks are already enforced (a second account
+gets 404 for the first account's session).
+
+## D17 — The CLI runs the agent locally and shells through the broker
+
+Phase 2 keeps the agent loop in-process (`@freebuff/agent-runtime`) against the user's checkout, like a
+local coding agent, while quota, history and ads stay server-side. Shell execution still goes through
+the `CommandExecutor` port (D11), now backed by the terminal broker over the platform's terminal
+channel — so the loop never spawns a process and agent stdio is never mixed with command output. Phase
+3 swaps the broker's backend for the sandbox without touching the loop or the tools.
+
+## D18 — Terminal channel is one-shot exec in Phase 2
+
+The broker runs `bash -lc` per command with piped stdio, its own process group, a scrubbed environment
+(credential-looking variables removed) and timeout/abort kills of the process group. It returns
+captured stdout/stderr rather than streaming a pty; interactive streaming belongs to the sandbox broker
+in Phase 3, where the pty lives behind the isolation boundary.
+
+## D19 — SDK transport contract
+
+The client speaks an envelope (`{ ok, data }` / `{ ok, error }`), attaches `x-request-id`, retries
+GETs on 408/429/5xx with the shared backoff, and never retries mutations. Timeouts use `withTimeout`.
+Errors surface as `SdkError` carrying `apiCode`, `status` and `requestId`, so surfaces can distinguish
+auth, quota and transport failures without parsing messages.

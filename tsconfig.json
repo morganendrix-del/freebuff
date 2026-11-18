@@ -7,14 +7,20 @@
       "@freebuff/shared/*": ["packages/shared/src/*"],
       "@freebuff/llm-providers": ["packages/llm-providers/src/index.ts"],
       "@freebuff/code-map": ["packages/code-map/src/index.ts"],
-      "@freebuff/agent-runtime": ["packages/agent-runtime/src/index.ts"]
+      "@freebuff/agent-runtime": ["packages/agent-runtime/src/index.ts"],
+      "@freebuff/quota": ["packages/quota/src/index.ts"],
+      "@freebuff/sdk": ["packages/sdk/src/index.ts"],
+      "@freebuff/cli": ["apps/cli/src/index.ts"]
     }
   },
   "include": [
     "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.tsx",
     "packages/*/test/**/*.ts",
     "apps/*/src/**/*.ts",
+    "apps/*/src/**/*.tsx",
     "apps/*/test/**/*.ts",
+    "apps/*/test/**/*.tsx",
     "tests/**/*.ts",
     "infra/**/*.ts",
     "vitest.config.ts"

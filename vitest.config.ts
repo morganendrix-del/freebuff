@@ -12,6 +12,9 @@ export default defineConfig({
       "@freebuff/llm-providers": entry("llm-providers"),
       "@freebuff/code-map": entry("code-map"),
       "@freebuff/agent-runtime": entry("agent-runtime"),
+      "@freebuff/quota": entry("quota"),
+      "@freebuff/sdk": entry("sdk"),
+      "@freebuff/cli": fileURLToPath(new URL("./apps/cli/src/index.ts", import.meta.url)),
     },
   },
   test: {
