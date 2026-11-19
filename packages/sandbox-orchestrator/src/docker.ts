@@ -135,9 +135,23 @@ function dockerRequest(
 }
 
 interface InspectResult {
+  readonly State?: {
+    readonly Status?: string;
+    readonly Running?: boolean;
+    readonly ExitCode?: number;
+    readonly Error?: string;
+  };
   readonly NetworkSettings?: {
     readonly Ports?: Record<string, readonly { readonly HostPort?: string }[] | null>;
   };
+}
+
+function tailLines(text: string, lines = 12): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "")
+    .slice(-lines)
+    .join(" | ");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -235,8 +249,10 @@ export class DockerProvider implements SandboxProvider {
     }
 
     let hostPort: string | undefined;
+    let state: InspectResult["State"];
     try {
       const parsed = JSON.parse(inspect.body) as InspectResult;
+      state = parsed.State;
       hostPort = parsed.NetworkSettings?.Ports?.[`${String(RUNTIME_PORT)}/tcp`]?.[0]?.HostPort;
     } catch (error) {
       await remove().catch(() => undefined);
@@ -246,8 +262,18 @@ export class DockerProvider implements SandboxProvider {
     }
 
     if (hostPort === undefined || hostPort === "") {
+      const logs = await dockerRequest(
+        this.#socketPath,
+        "GET",
+        `/containers/${containerId}/logs?stdout=1&stderr=1&tail=20`,
+        undefined,
+        10_000,
+      ).catch(() => ({ status: 0, body: "" }));
       await remove().catch(() => undefined);
-      throw new SandboxError("internal", "Docker published no sandbox runtime port.");
+      throw new SandboxError(
+        "internal",
+        `Docker published no sandbox runtime port (status ${state?.Status ?? "unknown"}, exit ${String(state?.ExitCode ?? "?")}, error ${state?.Error ?? "none"}). Logs: ${tailLines(logs.body)}`,
+      );
     }
 
     const runtime = new SandboxRuntimeClient({
