@@ -43,12 +43,28 @@
         "@types/ws": "^8.18.0",
       },
     },
+    "apps/cloud": {
+      "name": "@freebuff/cloud",
+      "version": "0.1.0",
+      "dependencies": {
+        "@freebuff/auth": "workspace:*",
+        "@freebuff/sandbox-orchestrator": "workspace:*",
+        "@freebuff/shared": "workspace:*",
+      },
+    },
     "packages/agent-runtime": {
       "name": "@freebuff/agent-runtime",
       "version": "0.1.0",
       "dependencies": {
         "@freebuff/code-map": "workspace:*",
         "@freebuff/llm-providers": "workspace:*",
+        "@freebuff/shared": "workspace:*",
+      },
+    },
+    "packages/auth": {
+      "name": "@freebuff/auth",
+      "version": "0.1.0",
+      "dependencies": {
         "@freebuff/shared": "workspace:*",
       },
     },
@@ -68,6 +84,13 @@
     },
     "packages/quota": {
       "name": "@freebuff/quota",
+      "version": "0.1.0",
+      "dependencies": {
+        "@freebuff/shared": "workspace:*",
+      },
+    },
+    "packages/sandbox-orchestrator": {
+      "name": "@freebuff/sandbox-orchestrator",
       "version": "0.1.0",
       "dependencies": {
         "@freebuff/shared": "workspace:*",
@@ -127,13 +150,19 @@
 
     "@freebuff/agent-runtime": ["@freebuff/agent-runtime@workspace:packages/agent-runtime"],
 
+    "@freebuff/auth": ["@freebuff/auth@workspace:packages/auth"],
+
     "@freebuff/cli": ["@freebuff/cli@workspace:apps/cli"],
+
+    "@freebuff/cloud": ["@freebuff/cloud@workspace:apps/cloud"],
 
     "@freebuff/code-map": ["@freebuff/code-map@workspace:packages/code-map"],
 
     "@freebuff/llm-providers": ["@freebuff/llm-providers@workspace:packages/llm-providers"],
 
     "@freebuff/quota": ["@freebuff/quota@workspace:packages/quota"],
+
+    "@freebuff/sandbox-orchestrator": ["@freebuff/sandbox-orchestrator@workspace:packages/sandbox-orchestrator"],
 
     "@freebuff/sdk": ["@freebuff/sdk@workspace:packages/sdk"],
 

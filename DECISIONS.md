@@ -142,3 +142,68 @@ The client speaks an envelope (`{ ok, data }` / `{ ok, error }`), attaches `x-re
 GETs on 408/429/5xx with the shared backoff, and never retries mutations. Timeouts use `withTimeout`.
 Errors surface as `SdkError` carrying `apiCode`, `status` and `requestId`, so surfaces can distinguish
 auth, quota and transport failures without parsing messages.
+
+## D20 — The sandbox runtime is a package module, not entrypoint script
+
+`infra/sandbox` kept only a health surface in Phase 0 (D8). The execution surface now lives in
+`packages/sandbox-orchestrator/src/runtime` and is imported by three callers: the container entrypoint,
+the development process provider and the integration tests. It depends on `node:` builtins only
+(type-only imports from `@freebuff/shared` are erased), so the image ships without `node_modules`.
+`infra/sandbox/entrypoint.ts` is a three-line loader for local runs.
+
+Consequence: enforcement code is identical in tests and production instead of a test-only fake, and
+the image is built from the repository root so the package layout survives into `/opt/sandbox`.
+
+## D21 — Three providers, with isolation stated rather than implied
+
+- `DockerProvider` — hardened container (read-only rootfs, tmpfs workspace, cap drop ALL,
+  no-new-privileges, non-root user, memory/CPU/PID/nofile limits, internal network). Local and CI path.
+- `FirecrackerProvider` — microVM with a read-only rootfs drive, per-sandbox workspace drive and a
+  per-VM tap device. Production boundary; needs a KVM host, so it is configured and reviewed here but
+  only exercised in staging.
+- `ProcessProvider` — ordinary child processes with the same runtime enforcement, for development and
+  tests. It has **no kernel boundary** and reports `isolation: "process"`, which the API surfaces.
+
+The `SandboxInstance` contract is identical for all three, so the pipeline, cloud API and preview
+proxy do not branch on provider. Hiding the difference would be worse than exposing it: a caller can
+never mistake a development sandbox for an isolated one.
+
+## D22 — Egress is enforced by an internal network plus one allowlist proxy
+
+Sandboxes sit on a Docker network with `internal: true` (no default route). The only reachable peer is
+`infra/sandbox-proxy`, which answers absolute-form HTTP and `CONNECT`, checks every destination with
+`isEgressAllowed` (`deny_all` wins, an empty allowlist denies all, `*.host` covers subdomains) and
+returns 403 for the rest. `deny_all` additionally clears every proxy variable. The same policy object
+feeds the Firecracker tap rules and is what `SandboxSpec.egress` already encoded in Phase 0.
+
+Proxy variables alone are not a boundary — which is why the network is internal. The process provider
+uses the proxy variables and says so in its docs.
+
+## D23 — GitHub credentials never travel in URLs or argv
+
+The clone command is built from a validated URL and branch; an installation token is passed with git's
+`http.extraHeader` through `GIT_CONFIG_*` environment variables, so it is absent from argv (`ps`),
+shell history and logs. Git runs with `GIT_TERMINAL_PROMPT=0` and `/bin/true` as askpass, so a private
+repository cannot make the sandbox prompt or hang.
+
+OAuth uses the authorization-code flow with PKCE and a mandatory `state`; GitHub App requests use a
+short-lived RS256 JWT. `GitHubError` exposes status and request id only.
+
+## D24 — Cloud API returns an id immediately and streams progress
+
+`POST /v1/sandboxes` starts the pipeline, waits only until the sandbox exists (provisioned), and
+answers `202` with the record. Progress is available through `GET /v1/sandboxes/:id` and an SSE
+`/events` route. The dashboard needs no websocket; the pipeline emits status and log events as it
+runs.
+
+Previews are public by design but keyed by a 128-bit sandbox id, proxied through the cloud origin, and
+physically unable to reach the control API (the preview route only forwards to the dev-server port).
+
+## D25 — Gate timing is measured on the real code path, with a local mirror
+
+The gate fixture is a bare clone of a repository served over `file://`; `CreateSandboxInput.cloneUrl`
+exists for mirrors and GitHub Enterprise as well as tests. Clone, detect, install, launch and probe are
+the production code paths. A real `https://github.com/octocat/Hello-World.git` clone through the same
+runtime was verified manually (745 ms), and the container path runs against a real Docker daemon in CI.
+The remaining gap is network latency and repository size for large public apps, which the 120 s budget
+absorbs but this environment cannot measure.

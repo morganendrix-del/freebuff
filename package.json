@@ -23,7 +23,10 @@
     "build": "bun run --cwd packages/shared build",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
-    "infra:config": "docker compose -f infra/docker-compose.yml config --quiet"
+    "infra:config": "docker compose -f infra/docker-compose.yml config --quiet",
+    "cloud": "bun run apps/cloud/src/index.ts",
+    "sandbox:runtime": "bun run infra/sandbox/entrypoint.ts",
+    "sandbox:proxy": "bun run infra/sandbox-proxy/entrypoint.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

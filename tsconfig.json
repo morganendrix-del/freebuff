@@ -10,6 +10,12 @@
       "@freebuff/agent-runtime": ["packages/agent-runtime/src/index.ts"],
       "@freebuff/quota": ["packages/quota/src/index.ts"],
       "@freebuff/sdk": ["packages/sdk/src/index.ts"],
+      "@freebuff/auth": ["packages/auth/src/index.ts"],
+      "@freebuff/sandbox-orchestrator": ["packages/sandbox-orchestrator/src/index.ts"],
+      "@freebuff/sandbox-orchestrator/runtime": [
+        "packages/sandbox-orchestrator/src/runtime/index.ts"
+      ],
+      "@freebuff/cloud": ["apps/cloud/src/index.ts"],
       "@freebuff/cli": ["apps/cli/src/index.ts"]
     }
   },

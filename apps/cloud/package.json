@@ -1,0 +1,17 @@
+{
+  "name": "@freebuff/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@freebuff/auth": "workspace:*",
+    "@freebuff/sandbox-orchestrator": "workspace:*",
+    "@freebuff/shared": "workspace:*"
+  }
+}

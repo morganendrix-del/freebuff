@@ -32,6 +32,8 @@ export const PLATFORM_ENV_SCHEMA = z.object({
   GITHUB_CLIENT_ID: optionalSecret,
   GITHUB_CLIENT_SECRET: optionalSecret,
   GITHUB_OAUTH_REDIRECT_URL: optionalUrl,
+  GITHUB_APP_ID: optionalString,
+  GITHUB_APP_PRIVATE_KEY: optionalSecret,
 
   TWILIO_ACCOUNT_SID: optionalSecret,
   TWILIO_AUTH_TOKEN: optionalSecret,
@@ -39,6 +41,12 @@ export const PLATFORM_ENV_SCHEMA = z.object({
 
   SANDBOX_HTTP_PORT: z.coerce.number().int().min(1024).max(65_535).default(8788),
   SANDBOX_IMAGE: z.string().min(1).default("freebuff/sandbox:local"),
+  SANDBOX_PROVIDER: z.enum(["docker", "process"]).default("process"),
+  SANDBOX_ROOT: z.string().min(1).default(".sandbox"),
+
+  CLOUD_PORT: z.coerce.number().int().min(0).max(65_535).default(8790),
+  CLOUD_API_TOKEN: optionalSecret,
+  CLOUD_PUBLIC_URL: optionalUrl,
 
   FREE_TIER_DAILY_HOURS_JSON: optionalString,
 });

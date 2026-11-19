@@ -24,18 +24,46 @@ services:
       timeout: 5s
       retries: 20
 
+  # The only route out of the sandbox network. Sandboxes reach it by name; it is the single place
+  # EgressPolicy is enforced for containers.
+  egress-proxy:
+    build:
+      context: ..
+      dockerfile: infra/sandbox-proxy/Dockerfile
+    image: ${SANDBOX_PROXY_IMAGE:-freebuff/sandbox-proxy:local}
+    restart: unless-stopped
+    environment:
+      EGRESS_PROXY_PORT: "8888"
+      EGRESS_ALLOW: ${SANDBOX_EGRESS_ALLOW:-}
+    networks:
+      - sandbox-runtime
+      - egress
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "const response = await fetch('http://127.0.0.1:8888/', { headers: {} }); process.exit(response.status === 200 || response.status === 400 || response.status === 403 ? 0 : 1);",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   sandbox:
     build:
-      context: ./sandbox
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: infra/sandbox/Dockerfile
     image: ${SANDBOX_IMAGE:-freebuff/sandbox:local}
     restart: unless-stopped
     # Hostile-input defaults (DECISIONS.md D7). The orchestrator applies the same limits per session.
     read_only: true
+    # uid/gid 1000 matches the image's unprivileged user; without it the tmpfs is root-owned and the
+    # runtime cannot write its workspace.
     tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=256m
-      - /run:rw,noexec,nosuid,nodev,size=16m
-      - /workspace:rw,nosuid,nodev,size=512m
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=1000,gid=1000
+      - /run:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000
+      - /workspace:rw,nosuid,nodev,size=512m,uid=1000,gid=1000
     cap_drop:
       - ALL
     security_opt:
@@ -51,7 +79,15 @@ services:
     environment:
       SANDBOX_HTTP_PORT: ${SANDBOX_HTTP_PORT:-8788}
       SANDBOX_EGRESS_MODE: ${SANDBOX_EGRESS_MODE:-allowlist}
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:-}
+      HTTP_PROXY: http://egress-proxy:8888
+      HTTPS_PROXY: http://egress-proxy:8888
+      http_proxy: http://egress-proxy:8888
+      https_proxy: http://egress-proxy:8888
+      NO_PROXY: ""
+      no_proxy: ""
     networks:
+      # Internal: no default route. The sandbox can reach the proxy container and nothing else.
       - sandbox-runtime
     healthcheck:
       test:
@@ -71,5 +107,8 @@ volumes:
 networks:
   sandbox-runtime:
     driver: bridge
-    # Local convenience only. Production replaces this with an allowlist egress proxy and, on
-    # microVMs, a host-level network policy derived from SandboxSpec.egress.
+    # No outbound route: containers on this network can only talk to each other. Sandboxes reach the
+    # internet exclusively through egress-proxy, which enforces the allowlist.
+    internal: true
+  egress:
+    driver: bridge

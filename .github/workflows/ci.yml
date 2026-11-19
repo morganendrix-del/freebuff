@@ -73,36 +73,37 @@ jobs:
       - run: docker compose -f infra/docker-compose.yml config --quiet
 
   sandbox-image:
-    name: sandbox image + health probe
+    name: sandbox image + control API
     needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Build hardened sandbox image
-        run: docker build -t freebuff/sandbox:ci infra/sandbox
+        run: docker build -f infra/sandbox/Dockerfile -t freebuff/sandbox:ci .
 
       - name: Boot sandbox with the same isolation flags as compose
-        run: |
+        run: |-
           docker run --detach --name sandbox-ci \
             --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
-            --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
-            --tmpfs /workspace:rw,nosuid,nodev,size=64m \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000 \
+            --tmpfs /run:rw,noexec,nosuid,nodev,size=8m,uid=1000,gid=1000 \
+            --tmpfs /workspace:rw,nosuid,nodev,size=256m,uid=1000,gid=1000 \
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --pids-limit 128 \
             --memory 512m \
             --cpus 1 \
+            --env SANDBOX_TOKEN=ci-token \
             --publish 8788:8788 \
             freebuff/sandbox:ci
 
       - name: Probe /health until ready
-        run: |
+        run: |-
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8788/health | grep -q '"status":"ok"'; then
               echo "sandbox healthy after ${attempt}s"
-              curl -fsS http://127.0.0.1:8788/info
+              curl -fsS -H 'authorization: Bearer ci-token' http://127.0.0.1:8788/info
               exit 0
             fi
             sleep 1
@@ -112,7 +113,7 @@ jobs:
           exit 1
 
       - name: Prove it runs unprivileged with a read-only root filesystem
-        run: |
+        run: |-
           uid=$(docker exec sandbox-ci id -u)
           test "$uid" != "0" || (echo "sandbox runs as root" && exit 1)
           if docker exec sandbox-ci sh -c 'touch /root-probe' 2>/dev/null; then
@@ -121,6 +122,51 @@ jobs:
           fi
           echo "unprivileged (uid=$uid) and read-only rootfs confirmed"
 
+      - name: Control API rejects unauthenticated calls
+        run: |-
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' \
+            -d '{"command":"id"}' \
+            http://127.0.0.1:8788/exec)
+          test "$status" = "401" || (echo "expected 401, got $status" >&2 && exit 1)
+
+      - name: Exec and file API work inside the sandbox
+        run: |-
+          uid=$(curl -fsS -X POST http://127.0.0.1:8788/exec \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' \
+            -d '{"command":"id -u"}' | jq -r '.stdout' | tr -d '\n')
+          test "$uid" != "0" || (echo "exec runs as root" >&2 && exit 1)
+
+          curl -fsS -X POST http://127.0.0.1:8788/files/write \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' \
+            -d '{"path":"src/hello.txt","content":"control-api-ok"}' > /dev/null
+          curl -fsS -X POST http://127.0.0.1:8788/files/read \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' \
+            -d '{"path":"src/hello.txt"}' | grep -q control-api-ok
+
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8788/files/read \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' \
+            -d '{"path":"../../etc/passwd"}')
+          test "$status" = "403" || (echo "expected 403 for traversal, got $status" >&2 && exit 1)
+          echo "exec, files and the workspace jail confirmed (uid=$uid)"
+
+      - name: Preview server is detected and proxied
+        run: |-
+          APP='import { createServer } from "node:http";
+          const server = createServer((_request, response) => { response.writeHead(200); response.end("preview-ok"); });
+          server.listen(0, "127.0.0.1", () => { console.log("Preview ready at http://localhost:" + server.address().port); });'
+          jq -n --arg app "$APP" '{path:"app.mjs", content:$app}' | curl -fsS -X POST \
+            http://127.0.0.1:8788/files/write \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' -d @- > /dev/null
+
+          curl -fsS -X POST http://127.0.0.1:8788/preview/start \
+            -H 'authorization: Bearer ci-token' -H 'content-type: application/json' \
+            -d '{"command":"bun run app.mjs","timeoutMs":45000}' | tee /tmp/preview.json | grep -q '"phase":"listening"'
+
+          curl -fsS http://127.0.0.1:8788/preview/proxy/ \
+            -H 'authorization: Bearer ci-token' | grep -q preview-ok
+          echo "preview detected and proxied"
+
       - name: Logs on failure
         if: failure()
         run: docker logs sandbox-ci || true
@@ -128,3 +174,23 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm --force sandbox-ci || true
+
+  sandbox-docker-provider:
+    name: docker provider (real daemon)
+    needs: sandbox-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Build image and the internal sandbox network
+        run: |-
+          docker build -f infra/sandbox/Dockerfile -t freebuff/sandbox:ci .
+          docker network create --internal freebuff-sandbox-egress || true
+      - name: Run the provider against the real daemon
+        env:
+          FREEBUFF_DOCKER_TESTS: "1"
+          SANDBOX_IMAGE: freebuff/sandbox:ci
+        run: bun run vitest run tests/integration/sandbox/docker-provider.test.ts
