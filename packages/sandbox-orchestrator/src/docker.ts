@@ -1,5 +1,9 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { chmod } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { createId } from "@freebuff/shared";
 import type { SandboxSpec } from "@freebuff/shared";
@@ -16,17 +20,23 @@ const BYTES_PER_MB = 1024 * 1024;
 export interface DockerHostConfigOptions {
   readonly networkName: string;
   readonly workspaceMb: number;
+  /** Host directory bind-mounted at /run/sandbox for the control socket. */
+  readonly controlDir: string;
 }
 
 /**
  * Hardened container configuration. This is the isolation boundary for local and CI runs, so the
  * flags are generated from the spec rather than hand-written per deployment:
  *
- * - read-only root filesystem, with only the workspace and /tmp as tmpfs
+ * - read-only root filesystem, with only the workspace, /tmp and the control socket dir writable
  * - all capabilities dropped, `no-new-privileges`, unprivileged uid
  * - memory, CPU, PID and file-descriptor ceilings
  * - egress only through the internal allowlist network (no default route), so a blocked host is
  *   unreachable even if the process ignores proxy settings
+ *
+ * The control channel is a Unix socket in a bind-mounted directory, not a published port: Docker does
+ * not publish ports on internal networks, and keeping the control API off the network stack is a
+ * smaller surface.
  */
 export function buildDockerHostConfig(
   spec: SandboxSpec,
@@ -41,6 +51,7 @@ export function buildDockerHostConfig(
       "/tmp": "rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000",
       "/run": "rw,noexec,nosuid,nodev,size=8m,uid=1000,gid=1000",
     },
+    Binds: [`${options.controlDir}:/run/sandbox:rw`],
     CapDrop: ["ALL"],
     SecurityOpt: ["no-new-privileges:true"],
     Privileged: false,
@@ -50,9 +61,6 @@ export function buildDockerHostConfig(
     PidsLimit: spec.resources.pidsLimit,
     Ulimits: [{ Name: "nofile", Soft: 4096, Hard: 8192 }],
     NetworkMode: spec.egress.mode === "open" ? "bridge" : options.networkName,
-    PortBindings: {
-      [`${String(RUNTIME_PORT)}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }],
-    },
     AutoRemove: false,
   };
 }
@@ -68,6 +76,7 @@ export function buildDockerContainerConfig(
     Env: [
       `SANDBOX_ID=${options.sandboxId}`,
       `SANDBOX_HTTP_PORT=${String(RUNTIME_PORT)}`,
+      "SANDBOX_CONTROL_SOCKET=/run/sandbox/control.sock",
       `SANDBOX_TOKEN=${options.token}`,
       `SANDBOX_EGRESS_MODE=${spec.egress.mode}`,
       ...Object.entries(spec.env ?? {}).map(([key, value]) => `${key}=${value}`),
@@ -141,9 +150,6 @@ interface InspectResult {
     readonly ExitCode?: number;
     readonly Error?: string;
   };
-  readonly NetworkSettings?: {
-    readonly Ports?: Record<string, readonly { readonly HostPort?: string }[] | null>;
-  };
 }
 
 function tailLines(text: string, lines = 12): string {
@@ -162,7 +168,7 @@ function sleep(ms: number): Promise<void> {
  * Docker provider: one hardened container per sandbox, with the sandbox runtime inside it.
  *
  * The container is the security boundary (see `buildDockerHostConfig`); exec, file access and the
- * preview all go through the runtime's token-authenticated control API, so the orchestrator never
+ * preview all go through the runtime's token-authenticated control socket, so the orchestrator never
  * executes anything on the host.
  */
 export class DockerProvider implements SandboxProvider {
@@ -187,6 +193,35 @@ export class DockerProvider implements SandboxProvider {
     // point a Docker sandbox at an arbitrary image that lacks the control API.
     const spec: SandboxSpec = { ...options.spec, image: this.#image };
 
+    const controlDir = await mkdtemp(path.join(tmpdir(), `freebuff-${id}-`));
+    // The container runs as uid 1000; the host directory is owned by whoever runs the orchestrator.
+    await chmod(controlDir, 0o777);
+    const controlSocket = path.join(controlDir, "control.sock");
+
+    let containerId: string | undefined;
+
+    const remove = async (): Promise<void> => {
+      if (containerId !== undefined) {
+        await dockerRequest(this.#socketPath, "POST", `/containers/${containerId}/stop?t=2`).catch(
+          () => undefined,
+        );
+        const removed = await dockerRequest(
+          this.#socketPath,
+          "DELETE",
+          `/containers/${containerId}?force=1&v=1`,
+          undefined,
+          this.#timeoutMs,
+        );
+        if (removed.status >= 400 && removed.status !== 404) {
+          throw new SandboxError(
+            "internal",
+            `Docker failed to remove the sandbox: ${removed.body}`,
+          );
+        }
+      }
+      await rm(controlDir, { recursive: true, force: true }).catch(() => undefined);
+    };
+
     const workspaceMb = Math.max(64, spec.resources.diskMb);
     const created = await dockerRequest(
       this.#socketPath,
@@ -197,40 +232,26 @@ export class DockerProvider implements SandboxProvider {
         token,
         networkName: this.#networkName,
         workspaceMb,
+        controlDir,
       }),
       this.#timeoutMs,
     );
 
     if (created.status !== 201) {
+      await remove();
       throw new SandboxError("internal", `Docker refused to create the sandbox: ${created.body}`);
     }
 
-    let containerId: string;
     try {
       const parsed = JSON.parse(created.body) as { Id?: unknown };
       if (typeof parsed.Id !== "string") throw new Error("missing id");
       containerId = parsed.Id;
     } catch (error) {
+      await remove();
       throw new SandboxError("internal", "Docker returned an unexpected create response.", {
         cause: error,
       });
     }
-
-    const remove = async (): Promise<void> => {
-      await dockerRequest(this.#socketPath, "POST", `/containers/${containerId}/stop?t=2`).catch(
-        () => undefined,
-      );
-      const removed = await dockerRequest(
-        this.#socketPath,
-        "DELETE",
-        `/containers/${containerId}?force=1&v=1`,
-        undefined,
-        this.#timeoutMs,
-      );
-      if (removed.status >= 400 && removed.status !== 404) {
-        throw new SandboxError("internal", `Docker failed to remove the sandbox: ${removed.body}`);
-      }
-    };
 
     const started = await dockerRequest(
       this.#socketPath,
@@ -238,62 +259,44 @@ export class DockerProvider implements SandboxProvider {
       `/containers/${containerId}/start`,
     );
     if (started.status >= 400 && started.status !== 304) {
-      await remove().catch(() => undefined);
+      await remove();
       throw new SandboxError("internal", `Docker failed to start the sandbox: ${started.body}`);
     }
 
-    const inspect = await dockerRequest(this.#socketPath, "GET", `/containers/${containerId}/json`);
-    if (inspect.status !== 200) {
-      await remove().catch(() => undefined);
-      throw new SandboxError("internal", `Docker failed to inspect the sandbox: ${inspect.body}`);
-    }
-
-    let hostPort: string | undefined;
-    let state: InspectResult["State"];
-    try {
-      const parsed = JSON.parse(inspect.body) as InspectResult;
-      state = parsed.State;
-      hostPort = parsed.NetworkSettings?.Ports?.[`${String(RUNTIME_PORT)}/tcp`]?.[0]?.HostPort;
-    } catch (error) {
-      await remove().catch(() => undefined);
-      throw new SandboxError("internal", "Docker returned an unexpected inspect response.", {
-        cause: error,
-      });
-    }
-
-    if (hostPort === undefined || hostPort === "") {
-      const logs = await dockerRequest(
-        this.#socketPath,
-        "GET",
-        `/containers/${containerId}/logs?stdout=1&stderr=1&tail=20`,
-        undefined,
-        10_000,
-      ).catch(() => ({ status: 0, body: "" }));
-      await remove().catch(() => undefined);
-      throw new SandboxError(
-        "internal",
-        `Docker published no sandbox runtime port (status ${state?.Status ?? "unknown"}, exit ${String(state?.ExitCode ?? "?")}, error ${state?.Error ?? "none"}). Logs: ${tailLines(logs.body)}`,
-      );
-    }
-
-    const runtime = new SandboxRuntimeClient({
-      origin: `http://127.0.0.1:${hostPort}`,
-      token,
-    });
+    const runtime = new SandboxRuntimeClient({ socketPath: controlSocket, token });
 
     const readyDeadline = Date.now() + 20_000;
     for (;;) {
       try {
-        const response = await fetch(`http://127.0.0.1:${hostPort}/health`, {
-          signal: AbortSignal.timeout(1_500),
-        });
-        if (response.ok) break;
+        await runtime.info();
+        break;
       } catch {
-        // Not up yet.
+        // Socket not created yet.
       }
       if (Date.now() > readyDeadline) {
-        await remove().catch(() => undefined);
-        throw new SandboxError("timeout", "The sandbox runtime did not become healthy.");
+        const inspect = await dockerRequest(
+          this.#socketPath,
+          "GET",
+          `/containers/${containerId}/json`,
+        ).catch(() => ({ status: 0, body: "" }));
+        let state: InspectResult["State"];
+        try {
+          state = (JSON.parse(inspect.body) as InspectResult).State;
+        } catch {
+          state = undefined;
+        }
+        const logs = await dockerRequest(
+          this.#socketPath,
+          "GET",
+          `/containers/${containerId}/logs?stdout=1&stderr=1&tail=20`,
+          undefined,
+          10_000,
+        ).catch(() => ({ status: 0, body: "" }));
+        await remove();
+        throw new SandboxError(
+          "timeout",
+          `The sandbox runtime did not become healthy (status ${state?.Status ?? "unknown"}, exit ${String(state?.ExitCode ?? "?")}, error ${state?.Error ?? "none"}). Logs: ${tailLines(logs.body)}`,
+        );
       }
       await sleep(100);
     }
@@ -304,7 +307,7 @@ export class DockerProvider implements SandboxProvider {
       await runtime.writeFile(".freebuff-probe", "ok");
       await runtime.readFile(".freebuff-probe");
     } catch (error) {
-      await remove().catch(() => undefined);
+      await remove();
       throw new SandboxError(
         "internal",
         "The sandbox workspace is not writable by the runtime (check tmpfs ownership).",

@@ -180,6 +180,12 @@ feeds the Firecracker tap rules and is what `SandboxSpec.egress` already encoded
 Proxy variables alone are not a boundary — which is why the network is internal. The process provider
 uses the proxy variables and says so in its docs.
 
+The control API is **not** a published port: Docker does not publish ports on an internal network, and
+exposing the control API to the host stack is unnecessary surface. The container mounts a host
+directory at `/run/sandbox` and the runtime listens on `control.sock` there; the orchestrator speaks
+HTTP over that socket (verified locally with `SANDBOX_CONTROL_SOCKET`). The TCP transport remains for
+local development and the image smoke test.
+
 ## D23 — GitHub credentials never travel in URLs or argv
 
 The clone command is built from a validated URL and branch; an installation token is passed with git's

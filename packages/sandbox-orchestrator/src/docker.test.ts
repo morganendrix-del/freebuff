@@ -14,12 +14,15 @@ const spec = buildSandboxSpec({
   },
 });
 
+const hostOptions = {
+  networkName: "freebuff-egress",
+  workspaceMb: 512,
+  controlDir: "/tmp/freebuff-control",
+};
+
 describe("docker isolation config", () => {
   test("mounts a read-only root filesystem and drops every capability", () => {
-    const config = buildDockerHostConfig(spec, {
-      networkName: "freebuff-egress",
-      workspaceMb: 512,
-    });
+    const config = buildDockerHostConfig(spec, hostOptions);
 
     expect(config.ReadonlyRootfs).toBe(true);
     expect(config.CapDrop).toEqual(["ALL"]);
@@ -28,10 +31,7 @@ describe("docker isolation config", () => {
   });
 
   test("converts resource limits into kernel limits", () => {
-    const config = buildDockerHostConfig(spec, {
-      networkName: "freebuff-egress",
-      workspaceMb: 512,
-    });
+    const config = buildDockerHostConfig(spec, hostOptions);
 
     expect(config.Memory).toBe(1024 * 1024 * 1024);
     expect(config.MemorySwap).toBe(1024 * 1024 * 1024);
@@ -40,11 +40,8 @@ describe("docker isolation config", () => {
     expect(config.Ulimits).toEqual([{ Name: "nofile", Soft: 4096, Hard: 8192 }]);
   });
 
-  test("keeps the workspace on a bounded tmpfs and the control port on loopback", () => {
-    const config = buildDockerHostConfig(spec, {
-      networkName: "freebuff-egress",
-      workspaceMb: 512,
-    });
+  test("keeps the workspace on a bounded tmpfs and the control channel on a socket", () => {
+    const config = buildDockerHostConfig(spec, hostOptions);
     const tmpfs = config.Tmpfs as Record<string, string>;
 
     expect(tmpfs["/workspace"]).toContain("size=512m");
@@ -52,34 +49,32 @@ describe("docker isolation config", () => {
     // The tmpfs must belong to the image's unprivileged user or the runtime cannot write it.
     expect(tmpfs["/workspace"]).toContain("uid=1000");
     expect(tmpfs["/tmp"]).toContain("gid=1000");
-    expect(config.PortBindings).toEqual({
-      "8788/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
-    });
+
+    // Docker does not publish ports on an internal network, so the control API is a mounted socket.
+    expect(config.Binds).toEqual(["/tmp/freebuff-control:/run/sandbox:rw"]);
+    expect(config.PortBindings).toBeUndefined();
   });
 
   test("routes allowlisted sandboxes through the internal network only", () => {
-    const config = buildDockerHostConfig(spec, {
-      networkName: "freebuff-egress",
-      workspaceMb: 512,
-    });
+    const config = buildDockerHostConfig(spec, hostOptions);
     expect(config.NetworkMode).toBe("freebuff-egress");
 
     const open = buildDockerHostConfig(
       { ...spec, egress: { mode: "open", allow: [] } } satisfies SandboxSpec,
-      { networkName: "freebuff-egress", workspaceMb: 512 },
+      hostOptions,
     );
     expect(open.NetworkMode).toBe("bridge");
   });
 
   test("passes the runtime token in the environment, never in labels", () => {
     const container = buildDockerContainerConfig(spec, {
+      ...hostOptions,
       sandboxId: "sandbox_abc",
       token: "runtime-token",
-      networkName: "freebuff-egress",
-      workspaceMb: 512,
     });
 
     expect(container.Env).toContain("SANDBOX_TOKEN=runtime-token");
+    expect(container.Env).toContain("SANDBOX_CONTROL_SOCKET=/run/sandbox/control.sock");
     expect(container.Env).toContain("SANDBOX_EGRESS_MODE=allowlist");
     expect(container.User).toBe("1000:1000");
     expect(JSON.stringify(container.Labels)).not.toContain("runtime-token");

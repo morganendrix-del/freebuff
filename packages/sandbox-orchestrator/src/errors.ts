@@ -1,6 +1,7 @@
 export type SandboxErrorCode =
   | "conflict"
   | "internal"
+  | "invalid_config"
   | "invalid_input"
   | "not_configured"
   | "not_found"

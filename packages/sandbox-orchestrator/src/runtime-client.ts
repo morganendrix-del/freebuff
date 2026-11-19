@@ -1,15 +1,18 @@
-import { request } from "node:http";
+import { request as httpRequest } from "node:http";
 
 import type { SandboxSpec } from "@freebuff/shared";
 
 import { SandboxError } from "./errors";
-import type { ExecOptions, SandboxInstance, SandboxProvider } from "./provider";
+import type { ExecOptions, SandboxInstance } from "./provider";
 import { assertPreviewPort } from "./preview";
 import type { PreviewStartOptions, PreviewState } from "./preview";
 import type { RunResult } from "./exec";
 
 export interface RuntimeClientOptions {
-  readonly origin: string;
+  /** TCP origin for a runtime reachable over loopback (development, published tests). */
+  readonly origin?: string;
+  /** Unix socket for a runtime whose control channel is a mounted socket (containers, microVMs). */
+  readonly socketPath?: string;
   readonly token?: string;
   readonly timeoutMs?: number;
 }
@@ -20,18 +23,35 @@ interface RuntimeErrorBody {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+interface RawResponse {
+  readonly status: number;
+  readonly body: Buffer;
+  headers(): Headers;
+}
+
 /**
  * HTTP client for the sandbox runtime control API (`packages/sandbox-orchestrator/src/runtime`).
- * Used by providers whose runtime lives behind a network port (Docker), so exec/files/preview all go
- * through the same enforced entry point as production.
+ *
+ * Supports two transports: a loopback origin (development, port-published tests) and a Unix socket
+ * (containers and microVMs). The socket is the production path for containers because Docker does not
+ * publish ports on an internal network — and a control channel that never enters the network stack is
+ * a smaller surface anyway.
  */
 export class SandboxRuntimeClient {
-  readonly #origin: string;
+  readonly #origin: string | undefined;
+  readonly #socketPath: string | undefined;
   readonly #token: string | undefined;
   readonly #timeoutMs: number;
 
   constructor(options: RuntimeClientOptions) {
-    this.#origin = options.origin.replace(/\/+$/, "");
+    if ((options.origin === undefined) === (options.socketPath === undefined)) {
+      throw new SandboxError(
+        "invalid_config",
+        "A sandbox runtime client needs exactly one of: origin, socketPath.",
+      );
+    }
+    this.#origin = options.origin?.replace(/\/+$/, "");
+    this.#socketPath = options.socketPath;
     this.#token = options.token;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -100,19 +120,20 @@ export class SandboxRuntimeClient {
 
   async proxyPreview(request: Request): Promise<Response> {
     const incoming = new URL(request.url);
-    const target = `${this.#origin}/preview/proxy${incoming.pathname}${incoming.search}`;
+    const path = `/preview/proxy${incoming.pathname}${incoming.search}`;
     const headers = new Headers(request.headers);
     headers.delete("host");
     headers.delete("connection");
     if (this.#token !== undefined) headers.set("authorization", `Bearer ${this.#token}`);
-    return await fetch(target, {
-      method: request.method,
-      headers,
-      redirect: "manual",
-      signal: AbortSignal.timeout(30_000),
-      ...(request.method === "GET" || request.method === "HEAD"
-        ? {}
-        : { body: await request.arrayBuffer() }),
+
+    const hasBody = request.method !== "GET" && request.method !== "HEAD";
+    const body = hasBody ? Buffer.from(await request.arrayBuffer()) : undefined;
+
+    const response = await this.#send(request.method, path, body, headers, 30_000);
+    const outputHeaders = new Headers(response.headers());
+    return new Response(new Uint8Array(response.body), {
+      status: response.status,
+      headers: outputHeaders,
     });
   }
 
@@ -122,37 +143,114 @@ export class SandboxRuntimeClient {
     body?: unknown,
     timeoutMs?: number,
   ): Promise<T> {
-    const payload = body === undefined ? undefined : JSON.stringify(body);
-    const headers: Record<string, string> = { accept: "application/json" };
-    if (payload !== undefined) headers["content-type"] = "application/json";
-    if (this.#token !== undefined) headers.authorization = `Bearer ${this.#token}`;
+    const headers = new Headers({ accept: "application/json" });
+    if (this.#token !== undefined) headers.set("authorization", `Bearer ${this.#token}`);
+    const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    if (payload !== undefined) headers.set("content-type", "application/json");
 
-    const responseText = await new Promise<string>((resolve, reject) => {
-      const req = request(
-        `${this.#origin}${path}`,
-        { method, headers, timeout: timeoutMs ?? this.#timeoutMs },
+    const response = await this.#send(method, path, payload, headers, timeoutMs);
+    const text = response.body.toString("utf8");
+
+    if (response.status >= 400) {
+      let parsed: RuntimeErrorBody = {};
+      try {
+        parsed = JSON.parse(text) as RuntimeErrorBody;
+      } catch {
+        // Non-JSON error body: fall through to the status-based message.
+      }
+      throw new SandboxError(
+        "internal",
+        parsed.error?.message ?? `Sandbox runtime returned ${String(response.status)}.`,
+      );
+    }
+
+    if (text.trim() === "") {
+      throw new SandboxError("internal", "Sandbox runtime returned an empty body.");
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch (error) {
+      throw new SandboxError("internal", "Sandbox runtime returned malformed JSON.", {
+        cause: error,
+      });
+    }
+  }
+
+  async #send(
+    method: string,
+    path: string,
+    body: Buffer | undefined,
+    headers: Headers,
+    timeoutMs?: number,
+  ): Promise<RawResponse> {
+    if (this.#origin !== undefined) {
+      return await this.#sendOverHttp(this.#origin, method, path, body, headers, timeoutMs);
+    }
+    return await this.#sendOverSocket(path, method, body, headers, timeoutMs);
+  }
+
+  async #sendOverHttp(
+    origin: string,
+    method: string,
+    path: string,
+    body: Buffer | undefined,
+    headers: Headers,
+    timeoutMs?: number,
+  ): Promise<RawResponse> {
+    const timeout = timeoutMs ?? this.#timeoutMs;
+    try {
+      const response = await fetch(`${origin}${path}`, {
+        method,
+        headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeout),
+        ...(body === undefined ? {} : { body: new Uint8Array(body) }),
+      });
+      return {
+        status: response.status,
+        body: Buffer.from(await response.arrayBuffer()),
+        headers: () => new Headers(response.headers),
+      };
+    } catch (error) {
+      throw new SandboxError("internal", "Cannot reach the sandbox runtime.", { cause: error });
+    }
+  }
+
+  async #sendOverSocket(
+    path: string,
+    method: string,
+    body: Buffer | undefined,
+    headers: Headers,
+    timeoutMs?: number,
+  ): Promise<RawResponse> {
+    const socketPath = this.#socketPath;
+    if (socketPath === undefined) {
+      throw new SandboxError("internal", "No sandbox runtime transport is configured.");
+    }
+
+    const flatHeaders: Record<string, string> = {};
+    headers.forEach((value, name) => {
+      flatHeaders[name] = value;
+    });
+    if (body !== undefined) flatHeaders["content-length"] = String(body.length);
+
+    return await new Promise<RawResponse>((resolve, reject) => {
+      const req = httpRequest(
+        { socketPath, path, method, headers: flatHeaders, timeout: timeoutMs ?? this.#timeoutMs },
         (res) => {
           const chunks: Buffer[] = [];
           res.on("data", (chunk: Buffer) => chunks.push(chunk));
           res.on("end", () => {
-            const status = res.statusCode ?? 0;
-            const text = Buffer.concat(chunks).toString("utf8");
-            if (status >= 400) {
-              let parsed: RuntimeErrorBody = {};
-              try {
-                parsed = JSON.parse(text) as RuntimeErrorBody;
-              } catch {
-                // Non-JSON error body: fall through to the status-based message.
-              }
-              reject(
-                new SandboxError(
-                  "internal",
-                  parsed.error?.message ?? `Sandbox runtime returned ${String(status)}.`,
-                ),
-              );
-              return;
+            const responseHeaders = new Headers();
+            for (const [name, value] of Object.entries(res.headers)) {
+              if (value === undefined) continue;
+              responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
             }
-            resolve(text);
+            resolve({
+              status: res.statusCode ?? 0,
+              body: Buffer.concat(chunks),
+              headers: () => responseHeaders,
+            });
           });
         },
       );
@@ -160,22 +258,15 @@ export class SandboxRuntimeClient {
         req.destroy(new Error("Sandbox runtime request timed out."));
       });
       req.on("error", (error) => {
-        reject(new SandboxError("internal", "Cannot reach the sandbox runtime.", { cause: error }));
+        reject(
+          new SandboxError("internal", "Cannot reach the sandbox runtime socket.", {
+            cause: error,
+          }),
+        );
       });
-      if (payload !== undefined) req.write(payload);
+      if (body !== undefined) req.write(body);
       req.end();
     });
-
-    if (responseText.trim() === "") {
-      throw new SandboxError("internal", "Sandbox runtime returned an empty body.");
-    }
-    try {
-      return JSON.parse(responseText) as T;
-    } catch (error) {
-      throw new SandboxError("internal", "Sandbox runtime returned malformed JSON.", {
-        cause: error,
-      });
-    }
   }
 }
 
@@ -188,8 +279,8 @@ export interface RemoteSandboxOptions {
 }
 
 /**
- * `SandboxInstance` whose control plane is a runtime reachable over the network (Docker container or
- * microVM guest). Preview state is cached locally so callers can read it without an extra round trip.
+ * `SandboxInstance` whose control plane is a runtime reachable over a socket or loopback port.
+ * Preview state is cached locally so callers can read it without an extra round trip.
  */
 export function createRemoteSandboxInstance(options: RemoteSandboxOptions): SandboxInstance {
   const { runtime } = options;
@@ -212,12 +303,10 @@ export function createRemoteSandboxInstance(options: RemoteSandboxOptions): Sand
     async stopPreview() {
       latest = await runtime.stopPreview();
     },
-    proxyPreview: (httpRequest) => runtime.proxyPreview(httpRequest),
+    proxyPreview: (httpRequestInit) => runtime.proxyPreview(httpRequestInit),
     async stop() {
       await runtime.stopPreview().catch(() => undefined);
       await options.dispose();
     },
   };
 }
-
-export type { SandboxProvider };

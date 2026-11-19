@@ -189,25 +189,6 @@ jobs:
         run: |-
           docker build -f infra/sandbox/Dockerfile -t freebuff/sandbox:ci .
           docker network create --internal freebuff-sandbox-egress || true
-      - name: Internal network still publishes the control port
-        run: |-
-          docker run --detach --name sandbox-net-probe \
-            --network freebuff-sandbox-egress \
-            --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000 \
-            --tmpfs /workspace:rw,nosuid,nodev,size=64m,uid=1000,gid=1000 \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --publish 127.0.0.1::8788 \
-            freebuff/sandbox:ci
-          PORT=$(docker inspect --format '{{(index (index .NetworkSettings.Ports "8788/tcp") 0).HostPort}}' sandbox-net-probe)
-          echo "published control port: ${PORT:-<none>}"
-          docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}}' sandbox-net-probe
-          for attempt in $(seq 1 20); do
-            if curl -fsS "http://127.0.0.1:${PORT}/health"; then break; fi
-            sleep 1
-          done
-          docker rm --force sandbox-net-probe || true
-
       - name: Run the provider against the real daemon
         env:
           FREEBUFF_DOCKER_TESTS: "1"
