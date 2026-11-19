@@ -49,6 +49,9 @@ describe("docker isolation config", () => {
 
     expect(tmpfs["/workspace"]).toContain("size=512m");
     expect(tmpfs["/workspace"]).toContain("noexec");
+    // The tmpfs must belong to the image's unprivileged user or the runtime cannot write it.
+    expect(tmpfs["/workspace"]).toContain("uid=1000");
+    expect(tmpfs["/tmp"]).toContain("gid=1000");
     expect(config.PortBindings).toEqual({
       "8788/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
     });

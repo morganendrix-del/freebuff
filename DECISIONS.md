@@ -156,8 +156,9 @@ the image is built from the repository root so the package layout survives into 
 
 ## D21 — Three providers, with isolation stated rather than implied
 
-- `DockerProvider` — hardened container (read-only rootfs, tmpfs workspace, cap drop ALL,
-  no-new-privileges, non-root user, memory/CPU/PID/nofile limits, internal network). Local and CI path.
+- `DockerProvider` — hardened container (read-only rootfs, tmpfs workspace owned by uid 1000, cap
+  drop ALL, no-new-privileges, non-root user, memory/CPU/PID/nofile limits, internal network). Local
+  and CI path. The provider owns the image, because it must contain the runtime's control API.
 - `FirecrackerProvider` — microVM with a read-only rootfs drive, per-sandbox workspace drive and a
   per-VM tap device. Production boundary; needs a KVM host, so it is configured and reviewed here but
   only exercised in staging.

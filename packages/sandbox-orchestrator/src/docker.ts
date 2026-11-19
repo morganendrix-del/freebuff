@@ -34,10 +34,12 @@ export function buildDockerHostConfig(
 ): Record<string, unknown> {
   return {
     ReadonlyRootfs: true,
+    // uid/gid 1000 is the image's unprivileged user: a root-owned tmpfs would leave the runtime
+    // unable to write its own workspace.
     Tmpfs: {
-      "/workspace": `rw,noexec,nosuid,nodev,size=${String(options.workspaceMb)}m`,
-      "/tmp": "rw,noexec,nosuid,nodev,size=64m",
-      "/run": "rw,noexec,nosuid,nodev,size=8m",
+      "/workspace": `rw,noexec,nosuid,nodev,size=${String(options.workspaceMb)}m,uid=1000,gid=1000`,
+      "/tmp": "rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000",
+      "/run": "rw,noexec,nosuid,nodev,size=8m,uid=1000,gid=1000",
     },
     CapDrop: ["ALL"],
     SecurityOpt: ["no-new-privileges:true"],
@@ -167,7 +169,9 @@ export class DockerProvider implements SandboxProvider {
   async create(options: { readonly spec: SandboxSpec }): Promise<SandboxInstance> {
     const id = createId("sandbox");
     const token = randomBytes(24).toString("hex");
-    const spec: SandboxSpec = { ...options.spec, image: options.spec.image || this.#image };
+    // The image must contain the sandbox runtime, so the provider owns the choice: a spec cannot
+    // point a Docker sandbox at an arbitrary image that lacks the control API.
+    const spec: SandboxSpec = { ...options.spec, image: this.#image };
 
     const workspaceMb = Math.max(64, spec.resources.diskMb);
     const created = await dockerRequest(
@@ -266,6 +270,20 @@ export class DockerProvider implements SandboxProvider {
         throw new SandboxError("timeout", "The sandbox runtime did not become healthy.");
       }
       await sleep(100);
+    }
+
+    // Fail at creation with a precise message if the workspace is not writable, rather than
+    // surfacing an opaque 500 on the first file operation.
+    try {
+      await runtime.writeFile(".freebuff-probe", "ok");
+      await runtime.readFile(".freebuff-probe");
+    } catch (error) {
+      await remove().catch(() => undefined);
+      throw new SandboxError(
+        "internal",
+        "The sandbox workspace is not writable by the runtime (check tmpfs ownership).",
+        { cause: error },
+      );
     }
 
     return createRemoteSandboxInstance({
