@@ -93,8 +93,19 @@ port 34309 and proxied it. `bun run cloud` then imported a repository through HT
 token), reached `ready` in 864 ms (`cloning 292 ms · installing 260 ms · starting 309 ms`), served the
 preview at `/preview/<id>/`, served the dashboard (`200`, 8.3 KB) and stopped the sandbox.
 
-CI status for this phase: **pending** at the time this section was written; recorded below once the
-run completed.
+CI run `44651911401` on `d46629b` concluded **success**: lint, typecheck, unit tests, build, compose
+config, `sandbox-image` and `sandbox-docker-provider` all green.
+
+Three defects were found and fixed by running this gate rather than by reading the code:
+
+1. `DockerProvider` let the spec's default image override its configured image, so the container was
+   created from an image that did not exist in CI. The provider now owns the image, because it must
+   contain the runtime's control API.
+2. Container tmpfs mounts were root-owned while the runtime runs as uid 1000, so the first file write
+   would have failed. Mounts now carry `uid=1000,gid=1000`, and creation probes the workspace.
+3. Docker does not publish ports on an internal network, so the control API was unreachable. The
+   control channel is now a Unix socket in a directory bind-mounted at `/run/sandbox`, with the socket
+   made connectable across uids (`0666`) and the per-run bearer token as the authorization boundary.
 
 ## Known gaps / risks
 
