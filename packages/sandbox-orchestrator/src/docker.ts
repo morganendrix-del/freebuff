@@ -266,12 +266,15 @@ export class DockerProvider implements SandboxProvider {
     const runtime = new SandboxRuntimeClient({ socketPath: controlSocket, token });
 
     const readyDeadline = Date.now() + 20_000;
+    const lastError: { value: string | undefined } = { value: undefined };
+    const lastErrorMessage = (): string => lastError.value ?? "unknown";
     for (;;) {
       try {
         await runtime.info();
         break;
-      } catch {
-        // Socket not created yet.
+      } catch (error) {
+        // Socket not created yet, or not connectable: keep the last reason for the failure message.
+        lastError.value = error instanceof Error ? error.message : String(error);
       }
       if (Date.now() > readyDeadline) {
         const inspect = await dockerRequest(
@@ -295,7 +298,7 @@ export class DockerProvider implements SandboxProvider {
         await remove();
         throw new SandboxError(
           "timeout",
-          `The sandbox runtime did not become healthy (status ${state?.Status ?? "unknown"}, exit ${String(state?.ExitCode ?? "?")}, error ${state?.Error ?? "none"}). Logs: ${tailLines(logs.body)}`,
+          `The sandbox runtime did not become healthy (status ${state?.Status ?? "unknown"}, exit ${String(state?.ExitCode ?? "?")}, error ${state?.Error ?? "none"}, last client error: ${lastErrorMessage()}). Logs: ${tailLines(logs.body)}`,
         );
       }
       await sleep(100);

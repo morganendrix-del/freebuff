@@ -1,3 +1,5 @@
+import { chmod } from "node:fs/promises";
+
 import { createSandboxRuntime } from "./index";
 
 /**
@@ -56,6 +58,10 @@ if (controlSocket === "") {
     unix: controlSocket,
     fetch: fetchHandler,
   });
+  // The orchestrator runs as a different uid than the container user, and connecting to a Unix socket
+  // needs write permission on it. The token is the authorization boundary, so the socket itself may be
+  // connectable by any local user.
+  await chmod(controlSocket, 0o666).catch(() => undefined);
   stopServer = (force) => server.stop(force);
   listening = { socket: controlSocket };
 }
